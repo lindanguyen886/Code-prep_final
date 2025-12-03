@@ -1,0 +1,381 @@
+---
+title: "Practice"
+format: html
+editor: visual
+---
+
+## Quarto
+
+Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
+
+## Running Code
+
+When you click the **Render** button a document will be generated that includes both content and the output of embedded code. You can embed code like this:
+
+```{r}
+#| message: false
+# Load required packages (assuming the list from the midterm is pre-loaded, plus key packages from labs)
+if (! "librarian" %in% rownames(installed.packages()) ){
+  install.packages("librarian")
+}
+
+# Install packages from your list if they're missing
+librarian::shelf(
+  tidyverse, broom, rsample, ggdag, causaldata, halfmoon, ggokabeito, malcolmbarrett/causalworkshop
+  , magrittr, ggplot2, estimatr, Formula, r-causal/propensity, gt, gtExtras, expm, fixest, did2s,
+  caret, RANN
+)
+
+set.seed(8740) # For reproducibility
+```
+
+## **Part 1: Markov Chains & Steady State** (7 points)
+
+You are analyzing a customer journey where customers move between **"Active," "Dormant,"** and **"Cancelled"** states monthly.
+
+### **Q-1: Transition Matrix and Steady State**
+
+The monthly transition probabilities are:
+
+-   **Active:** $10\%$ cancel, $5\%$ become dormant, $85\%$ remain active.
+
+-   **Dormant:** $20\%$ become active, $5\%$ cancel, $75\%$ remain dormant.
+
+-   **Cancelled:** $10\%$ become active, $90\%$ remain cancelled (absorbing state).
+
+\(1\) Define the 3x3 transition matrix \$P\$ for the states \[Active, Dormant, Cancelled\] in R, ensuring rows sum to 1. (2 pts)
+
+\(2\) Use the power method (or matrix exponentiation) to find the long-term (20-step) distribution, \$\\pi\_{20}\$, if the initial state is \$100\\%\$ Active (\$\\pi_0 = \[1, 0, 0\]\$). (3 pts)
+
+\(3\) Which state represents the absorbing state in this chain, and what is its long-term probability? (2 pts)
+
+```{r}
+#| echo: false
+# (1) Define the Transition Matrix P (rows = current state, columns = next state)
+# States: 1=Active, 2=Dormant, 3=Cancelled
+
+P <- matrix(
+  c(0.85, 0.05, 0.1,
+    0.2,0.75,0.05,
+    0.1,0,0.9
+  ), nrow = 3, byrow = TRUE
+)
+P # Check the matrix
+
+# (2) Compute the long-term distribution (20 steps)
+# Initial distribution: 100% Active (vector must be a row vector)
+pi_0 <- c(1,0,0)
+# Compute P^20 using the expm package operator %^%
+P20 <- P %^% 20
+# Compute final distribution: pi_20 = pi_0 %*% P^20
+pi_20 <- pi_0 %*% P20
+
+# Display the result for 20 steps
+pi_20
+
+# (3) Answer the absorbing state and long-term probability below:
+# Absorbing state: Cancalled state
+# Long-term probability of this state: 0.4709
+```
+
+The `echo: false` option disables the printing of code (only output is displayed).
+
+## **Part 2: Monte Carlo Simulation** (6 points)
+
+You will use the **Metropolis-Hastings (MH)** algorithm for a continuous random variable as defined in your lecture notes.
+
+### **Q-2: Metropolis-Hastings Sampling**
+
+We want to sample from an un-normalized target density $f(x) = \sin^2(x) e^{-x^2 / 2}$ using a **Random Walk Metropolis** sampler where the proposal distribution is symmetric, $q(y|x) = N(x, \sigma^2)$ (so $\frac{q(x|y)}{q(y|x)} = 1$). The acceptance probability simplifies to $\alpha(y|x) = \min \left( 1, \frac{f(y)}{f(x)} \right)$.
+
+\(1\) Define the un-normalized target density function, target_f(x). (2 pts)
+
+\(2\) Complete the MH sampling loop with the given parameters and starting value. (4 pts)
+
+> *Note: For the purpose of this exam simulation, the focus is on implementing the acceptance logic and Markov Chain steps.*
+
+```{r}
+# (1) Define the un-normalized target density
+target_f <- function(x) {
+  # f(x) = sin^2(x) * exp(-x^2 / 2)
+  # R code to implement f(x):
+  return((sin(x))^2*exp(-x^2/2))
+}
+
+# Parameters
+n_iter <- 10000    # Total iterations (M)
+sigma <- 1.5       # Proposal standard deviation (step size)
+x_current <- 0.0  # Starting value (theta_0)
+samples <- numeric(n_iter)
+
+# (2) Complete the MH Sampling Loop
+for (i in 1:n_iter) {
+  # 1. Propose a new point (y) from a symmetric proposal: N(x_current, sigma^2)
+  x_proposal <- rnorm(1, mean = x_current, sd = sigma)
+
+  # 2. Compute acceptance ratio (simplified alpha)
+  alpha <- min(1, target_f(x_proposal)/target_f(x_current))
+
+  # 3. Accept or reject the proposal
+  if (runif(1) < alpha) {
+    # ACCEPT: update the current state
+    x_current <-  x_proposal
+  } else {
+    # REJECT: the current state remains the same
+    # x_current remains x_current
+  }
+
+  # Store the current sample from the chain
+  samples[i] <- x_current
+}
+
+# Plot the distribution of samples (burn-in removed for visualization)
+burn_in <- 1000
+hist(samples[burn_in:n_iter], breaks = 50, main = "MH sample distribution", xlab = "x")
+```
+
+## **Part 3: Causal Inference & Fixed Effects** (7 points)
+
+You are using **Difference-in-Differences (DiD) / Fixed Effects (FE)** methods to estimate the impact of a staggered treatment rollout, similar to the TechMart example in your solution code^1^.
+
+### **Q-3: Difference-in-Differences with Two-Way Fixed Effects (TWFE)**
+
+Assume a panel dataset `retail_data` (similar structure to the TechMart data ^2^), containing `productivity` (outcome), `treated` (binary treatment indicator), `store_id` (unit fixed effect), and `period` (time fixed effect).
+
+**(1)** Write the `feols` formula syntax to estimate the **Average Treatment Effect on the Treated (ATT)** using a **Two-Way Fixed Effects (TWFE)** model. The model must include:
+
+-   The treatment variable $\text{treated}$ as the main coefficient of interest.
+
+-   **Store Fixed Effects** ($\alpha_i$).
+
+-   **Period Fixed Effects** ($\gamma_t$).
+
+-   Clustered Standard Errors at the
+
+    $$
+    \text{store\_id}
+    $$ level.
+
+    \(2\) Briefly explain the main identifying assumption of this TWFE model and how the fixed effects help satisfy it. (3 pts)
+
+*Note: Since the actual `retail_data` file is not available, provide only the correct R code syntax for the question.*
+
+```{r}
+# (1) TWFE feols model syntax for ATT on 'treated', 
+# controlling for store_id and period FE, with clustered standard errors.
+
+# model_twfe <- fixest::feols(
+#   productivity ~ treated | store_id + period , 
+#   data = retail_data,
+#   cluster = store_id 
+# )
+```
+
+```{r}
+model_twfe <- fixest::feols(
+  productivity ~ treated | store_id + period , 
+  data = retail_data,
+  cluster = ~store_id 
+)
+```
+
+**(2) Explanation of TWFE Assumption (4 pts)**
+
+-   **Assumption:** parallel trend
+
+-   **How FE helps:** remove all time-invariant variables, measure with-in effect
+
+## Part 1: Doubly Robust Estimation (DRE) (10 Points)
+
+This question uses the **Mosquito Net Data** (`causalworkshop::net_data`) to estimate the Average Treatment Effect (ATE) of $\text{net}$ use on $\text{malaria\_risk}$. You will implement the **Doubly Robust Estimator** as defined in your provided course functions^2^.
+
+### Q-1: Implementing the DRE
+
+Assume the following variables are defined (as per your solutions for Q3, Lab 8):
+
+-   Treatment variable: $D = \text{"net"}$
+
+-   Outcome variable: $Y = \text{"malaria\_risk"}$
+
+-   Confounders/Covariates for both propensity and outcome models: $X = \text{c("income", "health", "temperature")}$
+
+\(1\) Create a simplified version of the doubly_robust function that performs the core calculation:
+
+$$
+\hat{\tau}_{DR} = \frac{1}{N} \sum_{i=1}^{N} \left[ \frac{D_i (Y_i - \hat{\mu}_1)}{e(X_i)} + \hat{\mu}_1 \right] - \frac{1}{N} \sum_{i=1}^{N} \left[ \frac{(1-D_i)(Y_i - \hat{\mu}_0)}{1-e(X_i)} + \hat{\mu}_0 \right]
+$$
+
+-   For simplicity, assume $\hat{\mu}_1$ and $\hat{\mu}_0$ are generated from linear models without polynomial terms and that \$D\$ is a numeric vector (0 or 1). (3 pts)
+
+    \(2\) Prepare the data and run the DRE function to calculate the $\text{ATE}$. (2 pts)
+
+    \(3\) What is the core advantage of using a Doubly Robust estimator over a simple IPW or Regression Adjustment model? (5 pts)
+
+Note: For the function's interior, use `stats::glm()` for the propensity score model, and standard `stats::lm()` for the outcome models, as demonstrated in your notes^3333^.
+
+```{r}
+# Load data and convert treatment to numeric (as required by the DRE math)
+df <- causalworkshop::net_data |> dplyr::mutate(net = as.numeric(net))
+X <- c("income", "health", "temperature")
+D <- "net"
+Y <- "malaria_risk"
+
+# (1) Define the simplified doubly_robust function
+doubly_robust_lite <- function(df, X, D, Y) {
+  # Estimate Propensity Score e(X)
+  ps_formula <- as.formula(paste(D, "~", paste(X, collapse = "+")))
+  ps_model <- glm(ps_formula, data = df, family = binomial())
+  ps <- predict(ps_model, type = "response")
+
+  # Estimate Outcome Regression mu_0 and mu_1 (using simple linear models)
+  outcome_formula <- as.formula(paste(Y, "~", paste(X, collapse = "+")))
+
+  # mu_0 (Outcome if D=0)
+  idx0 <- df[, D] == 0
+  mu0_model <- lm(outcome_formula, data = df[idx0, ])
+  mu0 <- predict(mu0_model, newdata = df[, X])
+
+  # mu_1 (Outcome if D=1)
+  idx1 <- df[, D] == 1
+  mu1_model <- lm(outcome_formula, data = df[idx1, ])
+  mu1 <- predict(mu1_model, newdata = df[, X])
+
+  # Prepare vectors for DRE calculation
+  d <- df[, D] # Treatment vector (D)
+  y <- df[, Y] # Outcome vector (Y)
+
+  # Calculate DRE ATE
+  # Part 1 (Treated)
+  part1 <- mean( d * (y - mu1) / ps + mu1 )
+  # Part 2 (Control)
+  part2 <- mean( (1 - d) * (y - mu0) / (1 - ps) + mu0 )
+
+  ate_dre <- part1 - part2
+
+  return(ate_dre)
+}
+
+# (2) Run the DRE
+dre_estimate <- doubly_robust_lite(df, X, D, Y)
+print(paste("Doubly Robust ATE Estimate:", round(dre_estimate, 4)))
+
+# (3) Explanation:
+# Core Advantage: ❓
+```
+
+Here are the solutions to the **Advanced Causal Methods Test (R Code)** simulation you requested.
+
+## 🔑 Solutions for Advanced Causal Methods Test (R Code)
+
+------------------------------------------------------------------------
+
+## Part 1: Doubly Robust Estimation (DRE) (10 Points)
+
+### Q-1: Implementing the DRE
+
+This solution implements the core DRE function and computes the ATE estimate using the $\text{Mosquito Net}$ data.
+
+Đoạn mã
+
+```         
+# Load data and convert treatment to numeric (as required by the DRE math)
+# Data loading setup uses code from your lecture/lab:
+df <- causalworkshop::net_data |> dplyr::mutate(net = as.numeric(net))
+X <- c("income", "health", "temperature")
+D <- "net"
+Y <- "malaria_risk"
+
+# (1) Define the simplified doubly_robust function
+doubly_robust_lite <- function(df, X, D, Y) {
+  # Estimate Propensity Score e(X)
+  ps_formula <- as.formula(paste(D, "~", paste(X, collapse = "+")))
+  ps_model <- glm(ps_formula, data = df, family = binomial())
+  # [cite: 559, 562, 564, 565]
+  ps <- predict(ps_model, type = "response")
+
+  # Estimate Outcome Regression mu_0 and mu_1 (using simple linear models)
+  outcome_formula <- as.formula(paste(Y, "~", paste(X, collapse = "+")))
+
+  # mu_0 (Outcome if D=0) - [cite: 577, 578, 582, 584]
+  idx0 <- df[, D] == 0
+  mu0_model <- lm(outcome_formula, data = df[idx0, ])
+  mu0 <- predict(mu0_model, newdata = df[, X])
+
+  # mu_1 (Outcome if D=1) - [cite: 592, 594, 596, 597]
+  idx1 <- df[, D] == 1
+  mu1_model <- lm(outcome_formula, data = df[idx1, ])
+  mu1 <- predict(mu1_model, newdata = df[, X])
+
+  # Prepare vectors for DRE calculation - [cite: 603, 604, 606, 607]
+  d <- df[, D] # Treatment vector (D)
+  y <- df[, Y] # Outcome vector (Y)
+
+  # Calculate DRE ATE (Formula from notes: mean(d*(y-mu1)/ps + mu1) - mean((1-d)*(y-mu0)/(1-ps) + mu0))
+  # [cite: 609, 615]
+  part1 <- mean( d * (y - mu1) / ps + mu1 )
+  part2 <- mean( (1 - d) * (y - mu0) / (1 - ps) + mu0 )
+
+  ate_dre <- part1 - part2
+
+  return(ate_dre)
+}
+
+# (2) Run the DRE
+dre_estimate <- doubly_robust_lite(df, X, D, Y)
+print(paste("Doubly Robust ATE Estimate:", round(dre_estimate, 4)))
+# Course solutions using a similar setup found an estimate of -12.9. [cite: 619]
+```
+
+**(3) Core Advantage of Doubly Robust Estimation (DRE) (5 pts)**
+
+The core advantage of DRE is its **"double protection"** against model misspecification.
+
+-   
+
+    **DRE combines two models:** the **Propensity Score (IPW) model** and the **Outcome Regression (OR) model**^11^.
+
+-   The estimator remains consistent (unbiased) if **at least one** of these two models is correctly specified^2222^.
+
+-   A standard IPW estimator requires the propensity score model to be correct, and a standard OR model requires the outcome model to be correct^3^. DRE only requires one, providing a powerful bias correction mechanism in observational studies^4444^.
+
+------------------------------------------------------------------------
+
+## Part 2: Instrumental Variables (IV) Estimation (10 Points)
+
+### Q-2: IV Structure and Assumptions
+
+**(1) Two-Stage IV Regression Formulas (3 pts)**
+
+To estimate the causal effect of $D$ on $Y$ using $Z$ as an instrument, you need two sequential OLS regressions^5^:
+
+-   **First Stage (Formula):** $\text{qsmk} \sim \text{lottery\_win} + X$
+
+    -   
+
+        *Regresses the **Endogenous Treatment** (*$D$) on the **Instrument** ($Z$) and any observed covariates ($X$) to predict the instrument-induced variation in treatment. ^6666^
+
+-   **Reduced Form (Formula):** $\text{wt82\_71} \sim \text{lottery\_win} + X$
+
+    -   
+
+        *Regresses the **Outcome** (*$Y$) directly on the **Instrument** ($Z$) to estimate the total effect of the instrument on the outcome. ^7777^
+
+**(2) Three Core IV Assumptions (5 pts)**
+
+The three core assumptions required for $\text{lottery\_win}$ ($Z$) to be a valid Instrumental Variable are:
+
+1.  
+
+    **Relevance** (First-Stage Condition): The instrument ($Z$) must be **strongly related** to the treatment ($D$)^8888^. In this case, winning the lottery must significantly increase the likelihood of quitting smoking.
+
+2.  **Exclusion Restriction:** The instrument ($Z$) must only affect the outcome ($Y$) **through the treatment** ($D$). It cannot have a direct path to the outcome other than through the treatment^9^. Winning the lottery cannot independently affect weight change except by influencing whether the person quits smoking.
+
+3.  
+
+    **No Unobserved Confounding:** There should be no unobserved variables that confound the relationship between the instrument ($Z$) and the outcome ($Y$)^10^. (This is often simply stated as $Z$ must be independent of $Y(d)$).
+
+**(3) Final Estimate Calculation (2 pts)**
+
+The final causal estimate, $\beta^{IV}$, is obtained by dividing the coefficient of $Z$ from the **Reduced Form** regression by the coefficient of $Z$ from the **First Stage** regression^11111111^.
+
+$\beta^{IV} = \frac{\text{Reduced Form Coeff}}{\text{First Stage Coeff}} = \frac{\rho}{\pi} = \frac{\text{Coefficient on } Z \text{ in } (\text{Y} \sim Z)}{\text{Coefficient on } Z \text{ in } (\text{D} \sim Z)}$
